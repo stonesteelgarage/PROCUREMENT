@@ -1,0 +1,12 @@
+streamlit
+pandas
+openpyxl
+fpdf2
+openai
+requests
+beautifulsoup4
+python-Levenshtein
+rapidfuzz
+requests
+lxml
+duckduckgo-search
