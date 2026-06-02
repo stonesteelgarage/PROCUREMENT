@@ -38,7 +38,7 @@ DB_PATH = get_secret("DB_PATH", "procurement_intelligence.db")
 MATCH_THRESHOLD = int(get_secret("MATCH_THRESHOLD", 78))
 LOGIN_PASSWORD = get_secret("LOGIN_PASSWORD", "1234")
 LOGO_PATH = get_secret("LOGO_PATH", "logo.png")
-BACKGROUND_PATH = get_secret("BACKGROUND_PATH", "sfondo.png")
+BACKGROUND_PATH = get_secret("BACKGROUND_PATH", "sfondo")
 
 
 # ======================================================
@@ -64,12 +64,49 @@ if not OPENAI_API_KEY:
 
 
 # ======================================================
-# SFONDO
+# SFONDO ROBUSTO
 # ======================================================
+
+def resolve_file_path(path_value, default_stem):
+    candidates = []
+
+    if path_value:
+        candidates.append(str(path_value))
+        root, ext = os.path.splitext(str(path_value))
+        if not ext:
+            candidates.extend([
+                f"{path_value}.png",
+                f"{path_value}.PNG",
+                f"{path_value}.jpg",
+                f"{path_value}.JPG",
+                f"{path_value}.jpeg",
+                f"{path_value}.JPEG",
+                f"{path_value}.webp",
+                f"{path_value}.WEBP",
+            ])
+
+    candidates.extend([
+        default_stem,
+        f"{default_stem}.png",
+        f"{default_stem}.PNG",
+        f"{default_stem}.jpg",
+        f"{default_stem}.JPG",
+        f"{default_stem}.jpeg",
+        f"{default_stem}.JPEG",
+        f"{default_stem}.webp",
+        f"{default_stem}.WEBP",
+    ])
+
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+
+    return None
+
 
 def get_base64_image(path):
     try:
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             with open(path, "rb") as f:
                 return base64.b64encode(f.read()).decode()
     except Exception:
@@ -77,13 +114,24 @@ def get_base64_image(path):
     return None
 
 
-background_image = get_base64_image(BACKGROUND_PATH)
+resolved_background_path = resolve_file_path(BACKGROUND_PATH, "sfondo")
+background_image = get_base64_image(resolved_background_path)
 
 if background_image:
+    ext = os.path.splitext(resolved_background_path)[1].lower()
+    mime = "image/png"
+    if ext in [".jpg", ".jpeg"]:
+        mime = "image/jpeg"
+    elif ext == ".webp":
+        mime = "image/webp"
+
     background_css = f'''
-    background-image: url("data:image/png;base64,{background_image}");
+    background-image:
+        linear-gradient(rgba(2, 10, 20, 0.78), rgba(2, 10, 20, 0.78)),
+        url("data:{mime};base64,{background_image}");
     background-size: cover;
-    background-position: center;
+    background-position: center center;
+    background-repeat: no-repeat;
     background-attachment: fixed;
     '''
 else:
@@ -103,16 +151,14 @@ st.markdown(f"""
     color: white;
 }}
 
-.stApp::before {{
-    content: "";
-    position: fixed;
-    inset: 0;
-    background: rgba(2, 10, 20, 0.80);
-    z-index: -1;
-}}
-
 [data-testid="stSidebar"] {{
     background-color: rgba(6, 18, 33, 0.95);
+}}
+
+.main .block-container {{
+    background-color: rgba(2, 10, 20, 0.18);
+    border-radius: 18px;
+    padding-top: 2rem;
 }}
 
 h1, h2, h3, h4, h5, h6, p, label, span {{
@@ -120,7 +166,9 @@ h1, h2, h3, h4, h5, h6, p, label, span {{
 }}
 
 .stButton > button,
-.stDownloadButton > button {{
+.stDownloadButton > button,
+button[kind="primary"],
+button[kind="secondary"] {{
     background-color: #b30000 !important;
     color: white !important;
     border: 1px solid #ff4d4d !important;
@@ -129,7 +177,23 @@ h1, h2, h3, h4, h5, h6, p, label, span {{
 }}
 
 .stButton > button:hover,
-.stDownloadButton > button:hover {{
+.stDownloadButton > button:hover,
+button[kind="primary"]:hover,
+button[kind="secondary"]:hover {{
+    background-color: #d00000 !important;
+    color: white !important;
+    border: 1px solid #ff8080 !important;
+}}
+
+.stFileUploader button {{
+    background-color: #b30000 !important;
+    color: white !important;
+    border: 1px solid #ff4d4d !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+}}
+
+.stFileUploader button:hover {{
     background-color: #d00000 !important;
     color: white !important;
 }}
@@ -171,8 +235,32 @@ div[data-testid="stMetric"] {{
     border-radius: 12px !important;
 }}
 
-input, textarea {{
-    color: white !important;
+input[type="password"] {{
+    background-color: white !important;
+    color: black !important;
+    -webkit-text-security: disc !important;
+}}
+
+input[type="text"],
+textarea {{
+    background-color: white !important;
+    color: black !important;
+}}
+
+input[type="password"]::placeholder,
+input[type="text"]::placeholder,
+textarea::placeholder {{
+    color: #333333 !important;
+}}
+
+div[data-baseweb="input"] input {{
+    background-color: white !important;
+    color: black !important;
+}}
+
+div[data-baseweb="textarea"] textarea {{
+    background-color: white !important;
+    color: black !important;
 }}
 
 </style>
@@ -218,7 +306,74 @@ if not st.session_state["logged_in"]:
 
 
 # ======================================================
-# DATABASE
+# UTILITY TESTO
+# ======================================================
+
+def clean_text(value):
+    if value is None:
+        return ""
+
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+
+    value = str(value)
+    value = value.replace("\n", " ")
+    value = value.replace("\t", " ")
+    value = value.strip()
+    value = re.sub(r"\s+", " ", value)
+
+    return value
+
+
+def normalize_for_match(value):
+    value = clean_text(value).lower()
+    value = value.replace("'", "")
+    value = value.replace("’", "")
+    value = value.replace(".", "")
+    value = value.replace(",", "")
+    value = value.replace("à", "a")
+    value = value.replace("è", "e")
+    value = value.replace("é", "e")
+    value = value.replace("ì", "i")
+    value = value.replace("ò", "o")
+    value = value.replace("ù", "u")
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
+
+
+def extract_email_from_text(text):
+    text = clean_text(text)
+    found = re.findall(
+        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        text
+    )
+    return "; ".join(dict.fromkeys(found))
+
+
+def extract_phone_from_text(text):
+    text = clean_text(text)
+    found = re.findall(
+        r"(?:\+39\s?)?(?:0\d{1,4}[\s./-]?\d{5,8}|3\d{2}[\s./-]?\d{6,7})",
+        text
+    )
+    return "; ".join(dict.fromkeys(found))
+
+
+def extract_vat_from_text(text):
+    text = clean_text(text)
+    found = re.findall(
+        r"(?:P\.?\s?IVA|Partita\s+IVA|VAT)[:\s]*([0-9]{11})",
+        text,
+        flags=re.IGNORECASE
+    )
+    return "; ".join(dict.fromkeys(found))
+
+
+# ======================================================
+# DATABASE CON MIGRAZIONE AUTOMATICA
 # ======================================================
 
 def get_conn():
@@ -231,19 +386,29 @@ def init_db():
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS suppliers (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        package_name TEXT,
-        supplier_name TEXT,
-        vat_number TEXT,
-        email TEXT,
-        phone TEXT,
-        address_nl1 TEXT,
-        address_nl2 TEXT,
-        website TEXT,
-        source_file TEXT,
-        created_at TEXT
+        id INTEGER PRIMARY KEY AUTOINCREMENT
     )
     """)
+
+    cur.execute("PRAGMA table_info(suppliers)")
+    existing_columns = [row[1] for row in cur.fetchall()]
+
+    required_columns = {
+        "package_name": "TEXT",
+        "supplier_name": "TEXT",
+        "vat_number": "TEXT",
+        "email": "TEXT",
+        "phone": "TEXT",
+        "address_nl1": "TEXT",
+        "address_nl2": "TEXT",
+        "website": "TEXT",
+        "source_file": "TEXT",
+        "created_at": "TEXT"
+    }
+
+    for column_name, column_type in required_columns.items():
+        if column_name not in existing_columns:
+            cur.execute(f"ALTER TABLE suppliers ADD COLUMN {column_name} {column_type}")
 
     conn.commit()
     conn.close()
@@ -300,74 +465,19 @@ def supplier_exists(supplier_name, vat_number=""):
     supplier_name = clean_text(supplier_name).lower()
     vat_number = clean_text(vat_number).lower()
 
-    if vat_number:
+    if vat_number and "vat_number" in memory.columns:
         existing_vat = memory["vat_number"].fillna("").astype(str).str.lower().str.strip()
         if vat_number in existing_vat.values:
             return True
 
-    existing_names = memory["supplier_name"].fillna("").astype(str).str.lower().str.strip()
-    return supplier_name in existing_names.values
+    if "supplier_name" in memory.columns:
+        existing_names = memory["supplier_name"].fillna("").astype(str).str.lower().str.strip()
+        return supplier_name in existing_names.values
+
+    return False
 
 
 init_db()
-
-
-# ======================================================
-# UTILITY TESTO
-# ======================================================
-
-def clean_text(value):
-    if value is None:
-        return ""
-
-    if pd.isna(value):
-        return ""
-
-    value = str(value)
-    value = value.replace("\n", " ")
-    value = value.replace("\t", " ")
-    value = value.strip()
-    value = re.sub(r"\s+", " ", value)
-
-    return value
-
-
-def normalize_for_match(value):
-    value = clean_text(value).lower()
-    value = value.replace("'", "")
-    value = value.replace("’", "")
-    value = value.replace(".", "")
-    value = value.replace(",", "")
-    value = re.sub(r"\s+", " ", value)
-    return value.strip()
-
-
-def extract_email_from_text(text):
-    text = clean_text(text)
-    found = re.findall(
-        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
-        text
-    )
-    return "; ".join(dict.fromkeys(found))
-
-
-def extract_phone_from_text(text):
-    text = clean_text(text)
-    found = re.findall(
-        r"(?:\+39\s?)?(?:0\d{1,4}[\s./-]?\d{5,8}|3\d{2}[\s./-]?\d{6,7})",
-        text
-    )
-    return "; ".join(dict.fromkeys(found))
-
-
-def extract_vat_from_text(text):
-    text = clean_text(text)
-    found = re.findall(
-        r"(?:P\.?\s?IVA|Partita\s+IVA|VAT)[:\s]*([0-9]{11})",
-        text,
-        flags=re.IGNORECASE
-    )
-    return "; ".join(dict.fromkeys(found))
 
 
 # ======================================================
@@ -375,13 +485,6 @@ def extract_vat_from_text(text):
 # ======================================================
 
 def read_excel_raw(file):
-    """
-    Lettura robusta per Excel sporchi/formattati:
-    - evita di leggere 16.000 colonne vuote;
-    - analizza tutti i fogli;
-    - sceglie il foglio che sembra contenere la vendor list;
-    - legge massimo 80 colonne reali e 2.000 righe.
-    """
     file.seek(0)
 
     wb = load_workbook(
@@ -973,9 +1076,9 @@ memory = load_suppliers()
 if section == "Dashboard":
     col1, col2 = st.columns(2)
 
-    total_suppliers = memory["supplier_name"].nunique() if not memory.empty else 0
+    total_suppliers = memory["supplier_name"].nunique() if not memory.empty and "supplier_name" in memory.columns else 0
 
-    if not memory.empty:
+    if not memory.empty and "created_at" in memory.columns:
         memory["created_at_dt"] = pd.to_datetime(memory["created_at"], errors="coerce")
         last_30 = memory[
             memory["created_at_dt"] >= datetime.now() - timedelta(days=30)
@@ -1122,4 +1225,3 @@ elif section == "Database":
         )
     else:
         st.info("Database ancora vuoto.")
-
