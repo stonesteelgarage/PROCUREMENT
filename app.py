@@ -1,19 +1,37 @@
+# =====================================================
+# PROCUREMENT INTELLIGENCE
+# Almond Intelligence
+# =====================================================
+
+import streamlit as st
+import pandas as pd
+import sqlite3
 import os
 import re
 import json
-import base64
-import sqlite3
-from datetime import datetime, timedelta
+import requests
 
-import pandas as pd
-import streamlit as st
+from io import BytesIO
+from datetime import datetime, timedelta
 from rapidfuzz import fuzz
 from openai import OpenAI
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+from duckduckgo_search import DDGS
+from openpyxl.styles import Font, PatternFill, Alignment
 
 
-# ======================================================
-# CONFIG IBRIDA: STREAMLIT SECRETS + CONFIG.PY LOCALE
-# ======================================================
+# =====================================================
+# CONFIG
+# =====================================================
+
+APP_TITLE = "PROCUREMENT INTELLIGENCE"
+APP_SUBTITLE = "An AI-assisted Vendor Intelligence Platform"
+BRAND_NAME = "Almond Intelligence"
+
+DB_NAME = "procurement_intelligence.db"
+LOGO_PATH = "logo.png"
+
 
 def get_secret(key, default=None):
     try:
@@ -24,195 +42,160 @@ def get_secret(key, default=None):
 
     try:
         import config
-        if hasattr(config, key):
-            return getattr(config, key)
+        return getattr(config, key, default)
     except Exception:
-        pass
-
-    return default
+        return default
 
 
-OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
-DB_PATH = get_secret("DB_PATH", "procurement_intelligence.db")
-MATCH_THRESHOLD = int(get_secret("MATCH_THRESHOLD", 78))
-LOGIN_PASSWORD = get_secret("LOGIN_PASSWORD", "1234")
-LOGO_PATH = get_secret("LOGO_PATH", "logo.png")
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "")
+LOGIN_PASSWORD = get_secret("LOGIN_PASSWORD", "admin")
 
 
-# ======================================================
-# CONFIG BASE
-# ======================================================
-
-APP_NAME = "ALMOND INTELLIGENCE"
-USER_NAME = "Amandorla"
-
-os.makedirs("uploads", exist_ok=True)
-os.makedirs("output", exist_ok=True)
-os.makedirs("logs", exist_ok=True)
+# =====================================================
+# PAGE CONFIG
+# =====================================================
 
 st.set_page_config(
-    page_title=APP_NAME,
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Procurement Intelligence",
+    page_icon="📊",
+    layout="wide"
 )
 
-if not OPENAI_API_KEY:
-    st.error("OPENAI_API_KEY non trovata. Inseriscila in config.py oppure nei secrets di Streamlit.")
-    st.stop()
 
+# =====================================================
+# STYLE
+# =====================================================
 
-# ======================================================
-# SFONDO
-# ======================================================
-
-def get_base64(bin_file):
-    with open(bin_file, 'rb') as f:
-        data = f.read()
-    return base64.b64encode(data).decode()
-
-
-background_image = get_base64("sfondo.png")
-
-
-# ======================================================
-# CSS DARK CORPORATE
-# ======================================================
-
-st.markdown(f"""
+st.markdown("""
 <style>
 
-.stApp {{
-    background-image: url("data:image/png;base64,{background_image}");
-    background-size: cover;
-    background-position: center;
-    background-attachment: fixed;
+.stApp {
+    background: linear-gradient(135deg, #031B36 0%, #062A4F 45%, #021020 100%);
     color: white;
-}}
+}
 
-.stApp::before {{
-    content: "";
-    position: fixed;
-    inset: 0;
-    background: rgba(2, 10, 20, 0.80);
-    z-index: -1;
-}}
+[data-testid="stSidebar"] {
+    background-color: #02172E;
+}
 
-[data-testid="stSidebar"] {{
-    background-color: rgba(6, 18, 33, 0.95);
-}}
+h1, h2, h3, h4, h5, h6, p, label, span {
+    color: white;
+}
 
-h1, h2, h3, h4, h5, h6, p, label, span {{
-    color: white !important;
-}}
+.main-title {
+    font-size: 48px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    color: white;
+    margin-bottom: 0px;
+}
 
-.stButton > button,
-.stDownloadButton > button {{
-    background-color: #b30000 !important;
-    color: white !important;
-    border: 1px solid #ff4d4d !important;
-    border-radius: 8px !important;
-    font-weight: 700 !important;
-}}
+.subtitle {
+    font-size: 20px;
+    color: #A9D6FF;
+    margin-top: 4px;
+    margin-bottom: 6px;
+}
 
-.stButton > button:hover,
-.stDownloadButton > button:hover {{
-    background-color: #d00000 !important;
-    color: white !important;
-}}
+.brand {
+    font-size: 14px;
+    color: #68C7FF;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+}
 
-div[data-testid="stMetric"] {{
-    background-color: rgba(8, 33, 61, 0.85);
-    border: 1px solid rgba(0, 210, 255, 0.35);
-    border-radius: 14px;
-    padding: 18px;
-}}
-
-.card {{
-    background: rgba(8, 33, 61, 0.82);
-    border: 1px solid rgba(0, 210, 255, 0.25);
+.card {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
     border-radius: 18px;
     padding: 22px;
     margin-bottom: 18px;
-}}
+}
 
-.hero {{
-    background: linear-gradient(90deg, rgba(8,33,61,0.95), rgba(0,80,120,0.35));
-    border: 1px solid rgba(0,210,255,0.35);
-    border-radius: 22px;
-    padding: 30px;
-    margin-bottom: 25px;
-}}
+.kpi-card {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(104,199,255,0.30);
+    border-radius: 18px;
+    padding: 24px;
+    text-align: center;
+}
 
-.small-muted {{
-    color: #b8c7d9 !important;
+.kpi-number {
+    font-size: 40px;
+    font-weight: 800;
+    color: #68C7FF;
+}
+
+.kpi-label {
+    color: #D7ECFF;
     font-size: 14px;
-}}
+}
+
+.stButton > button,
+.stDownloadButton > button,
+div[data-testid="stDownloadButton"] > button,
+button[kind="primary"],
+button[kind="secondary"] {
+    background-color: #02172E !important;
+    color: #FFFFFF !important;
+    border-radius: 10px !important;
+    border: 1px solid #68C7FF !important;
+    font-weight: 700 !important;
+}
+
+.stButton > button *,
+.stDownloadButton > button *,
+div[data-testid="stDownloadButton"] > button *,
+button[kind="primary"] *,
+button[kind="secondary"] * {
+    color: #FFFFFF !important;
+}
+
+.stButton > button:hover,
+.stDownloadButton > button:hover,
+div[data-testid="stDownloadButton"] > button:hover,
+button[kind="primary"]:hover,
+button[kind="secondary"]:hover {
+    background-color: #063B70 !important;
+    color: #FFFFFF !important;
+}
+
+[data-testid="stFileUploader"] button {
+    background-color: #02172E !important;
+    color: white !important;
+    border-radius: 10px !important;
+    border: 1px solid #68C7FF !important;
+    font-weight: 700 !important;
+}
+
+[data-testid="stFileUploader"] button:hover {
+    background-color: #063B70 !important;
+    color: white !important;
+}
 
 </style>
 """, unsafe_allow_html=True)
 
 
-# ======================================================
-# LOGIN
-# ======================================================
-
-def login_screen():
-    st.markdown("<br><br>", unsafe_allow_html=True)
-
-    col1, col2, col3 = st.columns([1, 1.2, 1])
-
-    with col2:
-        if os.path.exists(LOGO_PATH):
-            st.image(LOGO_PATH, width=180)
-
-        st.markdown(f"""
-        <div class="card">
-            <h2>{APP_NAME}</h2>
-            <p class="small-muted">Vendor Intelligence • Market Intelligence • AI Matching</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        password = st.text_input("Password", type="password")
-
-        if st.button("Accedi", use_container_width=True):
-            if password == LOGIN_PASSWORD:
-                st.session_state["logged_in"] = True
-                st.rerun()
-            else:
-                st.error("Password errata")
-
-
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
-
-if not st.session_state["logged_in"]:
-    login_screen()
-    st.stop()
-
-
-# ======================================================
+# =====================================================
 # DATABASE
-# ======================================================
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
+# =====================================================
 
 def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
 
-    cur.execute("""
+    c.execute("""
     CREATE TABLE IF NOT EXISTS suppliers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        package_name TEXT,
+        package TEXT,
         supplier_name TEXT,
         vat_number TEXT,
         email TEXT,
         phone TEXT,
         address_nl1 TEXT,
         address_nl2 TEXT,
-        website TEXT,
         source_file TEXT,
         created_at TEXT
     )
@@ -222,35 +205,36 @@ def init_db():
     conn.close()
 
 
-def insert_supplier(row):
-    conn = get_conn()
-    cur = conn.cursor()
+init_db()
 
-    cur.execute("""
+
+def insert_supplier(package, supplier_name, vat_number="", email="", phone="", address_nl1="", address_nl2="", source_file=""):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+
+    c.execute("""
     INSERT INTO suppliers (
-        package_name,
+        package,
         supplier_name,
         vat_number,
         email,
         phone,
         address_nl1,
         address_nl2,
-        website,
         source_file,
         created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        row.get("package_name", ""),
-        row.get("supplier_name", ""),
-        row.get("vat_number", ""),
-        row.get("email", ""),
-        row.get("phone", ""),
-        row.get("address_nl1", ""),
-        row.get("address_nl2", ""),
-        row.get("website", ""),
-        row.get("source_file", ""),
-        datetime.now().isoformat(timespec="seconds")
+        package,
+        supplier_name,
+        vat_number,
+        email,
+        phone,
+        address_nl1,
+        address_nl2,
+        source_file,
+        datetime.now().isoformat()
     ))
 
     conn.commit()
@@ -258,332 +242,829 @@ def insert_supplier(row):
 
 
 def load_suppliers():
-    conn = get_conn()
+    conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM suppliers", conn)
     conn.close()
     return df
 
 
-init_db()
+# =====================================================
+# LOGIN
+# =====================================================
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
 
-# ======================================================
-# LETTURA EXCEL INTELLIGENTE
-# ======================================================
+def login_screen():
+    st.markdown("<br><br>", unsafe_allow_html=True)
 
-def clean_text(value):
-    if pd.isna(value):
-        return ""
-    value = str(value).replace("\n", " ").replace("\t", " ").strip()
-    value = re.sub(r"\s+", " ", value)
-    return value
+    st.markdown(f"""
+    <div class="card" style="max-width:500px;margin:auto;text-align:center;">
+        <div class="main-title">{APP_TITLE}</div>
+        <div class="subtitle">{APP_SUBTITLE}</div>
+        <div class="brand">{BRAND_NAME}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns([1.4, 1, 1.4])
+
+    with c2:
+        password = st.text_input("Password", type="password")
+
+        if st.button("ACCEDI"):
+            if password == LOGIN_PASSWORD:
+                st.session_state.logged_in = True
+                st.rerun()
+            else:
+                st.error("Password errata")
 
 
-def read_excel_raw(file):
-    return pd.read_excel(file, dtype=str, header=None).fillna("")
+if not st.session_state.logged_in:
+    login_screen()
+    st.stop()
 
 
-def normalize_col(c):
-    return str(c).strip().lower()
+# =====================================================
+# HEADER
+# =====================================================
+
+col1, col2 = st.columns([6, 1])
+
+with col1:
+    st.markdown(f"""
+    <div class="main-title">{APP_TITLE}</div>
+    <div class="subtitle">{APP_SUBTITLE}</div>
+    <div class="brand">{BRAND_NAME}</div>
+    """, unsafe_allow_html=True)
+
+with col2:
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=90)
 
 
-def find_col(df, keywords):
+# =====================================================
+# SIDEBAR
+# =====================================================
+
+st.sidebar.markdown("## Almond Intelligence")
+st.sidebar.markdown("Utente: **Amandorla**")
+st.sidebar.markdown("---")
+
+if "section" not in st.session_state:
+    st.session_state.section = "Dashboard"
+
+if "last_scouting_df" not in st.session_state:
+    st.session_state.last_scouting_df = None
+
+if "last_scouting_package" not in st.session_state:
+    st.session_state.last_scouting_package = ""
+
+
+if st.sidebar.button("Dashboard"):
+    st.session_state.section = "Dashboard"
+
+if st.sidebar.button("Importa vendor storiche"):
+    st.session_state.section = "Importa"
+
+if st.sidebar.button("Genera vendor list"):
+    st.session_state.section = "Vendor"
+
+if st.sidebar.button("Scouting fornitori"):
+    st.session_state.section = "Scouting"
+
+if st.sidebar.button("Database fornitori"):
+    st.session_state.section = "Database"
+
+section = st.session_state.section
+
+
+# =====================================================
+# HELPERS
+# =====================================================
+
+def dataframe_to_excel(df, sheet_name="Vendor List"):
+    output = BytesIO()
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+
+        ws = writer.book[sheet_name]
+
+        header_fill = PatternFill("solid", fgColor="02172E")
+        header_font = Font(color="FFFFFF", bold=True)
+
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        widths = {
+            "A": 28,
+            "B": 38,
+            "C": 18,
+            "D": 20,
+            "E": 35,
+            "F": 42,
+            "G": 50,
+            "H": 14
+        }
+
+        for col, width in widths.items():
+            ws.column_dimensions[col].width = width
+
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+    output.seek(0)
+    return output
+
+
+def guess_column(df, names):
     for col in df.columns:
-        col_norm = normalize_col(col)
-        for kw in keywords:
-            if kw in col_norm:
+        for n in names:
+            if n.lower() in str(col).lower():
                 return col
     return None
 
 
-def detect_columns(df):
+def supplier_name_from_domain(url):
+    domain = urlparse(url).netloc.replace("www.", "")
+    name = domain.split(".")[0]
+    name = re.sub(r"[^A-Za-z0-9]", " ", name)
+    return name.upper().strip()
+
+
+# =====================================================
+# IMPORT VENDOR LIST
+# =====================================================
+
+def normalize_vendor_dataframe(df, source_file=""):
+    package_col = guess_column(df, ["package", "pacchetto", "categoria", "lavorazione"])
+    supplier_col = guess_column(df, ["fornitore", "supplier", "vendor", "ragione sociale", "azienda"])
+    vat_col = guess_column(df, ["iva", "vat", "piva", "partita iva"])
+    email_col = guess_column(df, ["email", "mail"])
+    phone_col = guess_column(df, ["telefono", "phone", "tel"])
+
+    if not package_col or not supplier_col:
+        return 0
+
+    inserted = 0
+
+    for _, row in df.iterrows():
+        package = str(row.get(package_col, "")).strip()
+        supplier = str(row.get(supplier_col, "")).strip()
+
+        if package and supplier:
+            insert_supplier(
+                package=package,
+                supplier_name=supplier,
+                vat_number=str(row.get(vat_col, "")) if vat_col else "",
+                email=str(row.get(email_col, "")) if email_col else "",
+                phone=str(row.get(phone_col, "")) if phone_col else "",
+                source_file=source_file
+            )
+            inserted += 1
+
+    return inserted
+
+
+# =====================================================
+# MATCHING
+# =====================================================
+
+def find_matching_suppliers(package_name, threshold=70):
+    suppliers_df = load_suppliers()
+
+    if suppliers_df.empty:
+        return pd.DataFrame()
+
+    matches = []
+
+    for _, row in suppliers_df.iterrows():
+        score = fuzz.token_set_ratio(str(package_name), str(row["package"]))
+
+        if score >= threshold:
+            data = row.to_dict()
+            data["matching"] = score
+            matches.append(data)
+
+    if not matches:
+        return pd.DataFrame()
+
+    result = pd.DataFrame(matches)
+    result = result.sort_values(by="matching", ascending=False)
+
+    return result
+
+
+def generate_completed_vendor(template_df, threshold=70):
+    package_col = guess_column(template_df, ["package", "pacchetto", "categoria", "lavorazione"])
+
+    if not package_col:
+        raise Exception("Colonna pacchetto non trovata.")
+
+    final_rows = []
+
+    for _, row in template_df.iterrows():
+        package_name = str(row[package_col]).strip()
+        matches = find_matching_suppliers(package_name, threshold)
+
+        if matches.empty:
+            final_rows.append(row.to_dict())
+            continue
+
+        for _, match in matches.iterrows():
+            new_row = row.to_dict()
+
+            for col in template_df.columns:
+                col_lower = str(col).lower()
+
+                if "fornitore" in col_lower or "supplier" in col_lower or "vendor" in col_lower:
+                    new_row[col] = match["supplier_name"]
+
+                if "iva" in col_lower or "vat" in col_lower or "piva" in col_lower:
+                    new_row[col] = match["vat_number"]
+
+                if "email" in col_lower or "mail" in col_lower:
+                    new_row[col] = match["email"]
+
+                if "telefono" in col_lower or "phone" in col_lower or "tel" in col_lower:
+                    new_row[col] = match["phone"]
+
+            final_rows.append(new_row)
+
+    return pd.DataFrame(final_rows)
+
+
+# =====================================================
+# WEB SCOUTING
+# =====================================================
+
+BAD_DOMAINS = [
+    "roblox", "wikipedia", "facebook", "linkedin", "instagram", "youtube",
+    "amazon", "ebay", "subito", "reddit", "blog", "news", "pinterest",
+    "tripadvisor"
+]
+
+
+def is_bad_url(url):
+    u = url.lower()
+    return any(bad in u for bad in BAD_DOMAINS)
+
+
+def clean_text(text):
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def extract_contacts(text):
+    emails = list(set(re.findall(
+        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        text
+    )))
+
+    phones = list(set(re.findall(
+        r"(?:(?:\+39|0039)\s*)?(?:0\d{1,4}[\s.-]?\d{5,8}|3\d{2}[\s.-]?\d{6,7})",
+        text
+    )))
+
+    vat_numbers = list(set(re.findall(
+        r"(?:P\.?\s?IVA|Partita IVA|PIVA|VAT)\s*[:\-]?\s*(\d{11})",
+        text,
+        flags=re.IGNORECASE
+    )))
+
+    return emails, phones, vat_numbers
+
+
+def build_search_queries(query, area="Italia"):
+    return [
+        f"{query} azienda fornitore produttore catalogo contatti telefono email {area}",
+        f"{query} produttori Italia fornitori catalogo azienda sede contatti",
+        f"{query} aziende B2B vendita produzione servizi contatti {area}",
+        f"{query} catalogo prodotti azienda industria fornitore {area}",
+        f"{query} forniture lavori servizi impresa contatti Italia"
+    ]
+
+
+def discover_supplier_sites(query, area="Italia"):
+    search_queries = build_search_queries(query, area)
+
+    results = []
+    seen_domains = set()
+
+    with DDGS() as ddgs:
+        for search_query in search_queries:
+            for r in ddgs.text(search_query, max_results=40):
+                url = r.get("href") or r.get("url")
+
+                if not url:
+                    continue
+
+                if is_bad_url(url):
+                    continue
+
+                domain = urlparse(url).netloc.replace("www.", "")
+
+                if domain in seen_domains:
+                    continue
+
+                seen_domains.add(domain)
+
+                results.append({
+                    "title": r.get("title", ""),
+                    "url": url,
+                    "domain": domain,
+                    "query_used": search_query
+                })
+
+                if len(results) >= 80:
+                    return results
+
+    return results
+
+
+def fetch_page(url):
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    try:
+        r = requests.get(url, headers=headers, timeout=8)
+
+        if r.status_code != 200:
+            return "", None
+
+        soup = BeautifulSoup(r.text, "lxml")
+        text = soup.get_text(" ")
+
+        return clean_text(text), soup
+
+    except Exception:
+        return "", None
+
+
+def get_internal_links(base_url, soup):
+    links = []
+
+    keywords = [
+        "contatti", "contact", "azienda", "about", "chi-siamo",
+        "servizi", "prodotti", "services", "products", "company",
+        "catalogo"
+    ]
+
+    base_domain = urlparse(base_url).netloc
+
+    for a in soup.find_all("a", href=True):
+        href = urljoin(base_url, a["href"])
+        parsed = urlparse(href)
+
+        if parsed.netloc != base_domain:
+            continue
+
+        href_lower = href.lower()
+
+        if any(k in href_lower for k in keywords):
+            links.append(href)
+
+    return list(set(links))[:8]
+
+
+def crawl_supplier_site(url):
+    all_text = ""
+
+    home_text, soup = fetch_page(url)
+
+    if home_text:
+        all_text += home_text + " "
+
+    if soup:
+        links = get_internal_links(url, soup)
+
+        for link in links:
+            page_text, _ = fetch_page(link)
+
+            if page_text:
+                all_text += page_text + " "
+
+    all_text = all_text[:20000]
+
+    emails, phones, vat_numbers = extract_contacts(all_text)
+
     return {
-        "package_col": find_col(df, [
-            "pacchetto", "lavorazione", "descrizione", "categoria",
-            "scope", "risorsa merceologico", "merceologico"
-        ]),
-        "supplier_col": find_col(df, [
-            "fornitore", "supplier", "vendor", "ragione sociale",
-            "azienda", "impresa", "nome societa", "nome società",
-            "societa", "società"
-        ]),
-        "vat_col": find_col(df, [
-            "piva", "p.iva", "partita iva", "vat"
-        ]),
-        "email_col": find_col(df, [
-            "email", "mail", "e-mail"
-        ]),
-        "phone_col": find_col(df, [
-            "telefono", "phone", "tel", "cellulare"
-        ]),
-        "address1_col": find_col(df, [
-            "nl1", "indirizzo", "address"
-        ]),
-        "address2_col": find_col(df, [
-            "nl2"
-        ]),
-        "website_col": find_col(df, [
-            "sito", "website", "url", "web"
-        ])
+        "url": url,
+        "text": all_text,
+        "emails": emails,
+        "phones": phones,
+        "vat_numbers": vat_numbers
     }
 
 
-# ======================================================
-# IMPORT VENDOR INTELLIGENTE
-# ======================================================
+def evaluate_supplier_with_ai(category, crawled):
+    if not OPENAI_API_KEY:
+        return {}
 
-def import_vendor_excel(file):
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
-    raw_df = read_excel_raw(file)
+    prompt = f"""
+Categoria/lavorazione:
+{category}
 
-    best_header_row = None
-    best_score = -1
+Testo estratto dal sito:
+{crawled["text"][:15000]}
 
-    keywords = [
-        "merceologico", "societa", "società", "mail",
-        "telefono", "fornitore", "azienda"
-    ]
+Devi capire se questo sito appartiene a un fornitore potenzialmente utile per procurement.
 
-    for idx in range(min(len(raw_df), 40)):
+Restituisci SOLO JSON valido:
 
-        row_values = [clean_text(v).lower() for v in raw_df.iloc[idx].tolist()]
-        joined = " ".join(row_values)
+{{
+"is_supplier": true,
+"supplier_name":"",
+"physical_address":"",
+"products":"",
+"matching_percent":0
+}}
 
-        score = 0
+Regole:
+- is_supplier true se il sito sembra di una azienda reale o catalogo aziendale.
+- matching_percent da 0 a 100.
+- se è poco pertinente ma potrebbe essere utile, dai comunque un matching basso tra 10 e 40.
+- se non pertinente, matching_percent 0 e is_supplier false.
+- non inventare partita IVA, email o telefoni.
+- se il nome azienda non è chiaro, lascia supplier_name vuoto.
+- se non trovi indirizzo fisico, lascia physical_address vuoto.
+"""
 
-        for kw in keywords:
-            if kw in joined:
-                score += 1
-
-        if score > best_score:
-            best_score = score
-            best_header_row = idx
-
-    headers = [clean_text(v) for v in raw_df.iloc[best_header_row].tolist()]
-
-    df = raw_df.iloc[best_header_row + 1:].copy()
-    df.columns = headers
-    df = df.fillna("")
-
-    cols = detect_columns(df)
-
-    count = 0
-
-    for _, r in df.iterrows():
-
-        package = clean_text(r.get(cols["package_col"], ""))
-        supplier = clean_text(r.get(cols["supplier_col"], ""))
-
-        if not package or not supplier:
-            continue
-
-        insert_supplier({
-            "package_name": package,
-            "supplier_name": supplier,
-            "vat_number": clean_text(r.get(cols["vat_col"], "")) if cols["vat_col"] else "",
-            "email": clean_text(r.get(cols["email_col"], "")) if cols["email_col"] else "",
-            "phone": clean_text(r.get(cols["phone_col"], "")) if cols["phone_col"] else "",
-            "address_nl1": clean_text(r.get(cols["address1_col"], "")) if cols["address1_col"] else "",
-            "address_nl2": clean_text(r.get(cols["address2_col"], "")) if cols["address2_col"] else "",
-            "website": clean_text(r.get(cols["website_col"], "")) if cols["website_col"] else "",
-            "source_file": file.name
-        })
-
-        count += 1
-
-    return count
-
-
-# ======================================================
-# MATCHING
-# ======================================================
-
-def match_package(package, memory):
-
-    results = []
-
-    for _, row in memory.iterrows():
-
-        score = fuzz.token_set_ratio(
-            str(package).lower(),
-            str(row["package_name"]).lower()
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": "Rispondi solo JSON valido."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0
         )
 
-        if score >= MATCH_THRESHOLD:
-            item = row.to_dict()
-            item["score"] = score
-            results.append(item)
+        content = response.choices[0].message.content
+        content = content.replace("```json", "")
+        content = content.replace("```", "").strip()
 
-    return sorted(results, key=lambda x: x["score"], reverse=True)
+        return json.loads(content)
 
-
-# ======================================================
-# SIDEBAR CON TASTI
-# ======================================================
-
-with st.sidebar:
-
-    if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=160)
-
-    st.markdown(f"### {APP_NAME}")
-    st.caption("Procurement dashboard")
-
-    st.divider()
-
-    if "section" not in st.session_state:
-        st.session_state["section"] = "Dashboard"
-
-    if st.button("Dashboard", use_container_width=True):
-        st.session_state["section"] = "Dashboard"
-
-    if st.button("Import Vendor Storiche", use_container_width=True):
-        st.session_state["section"] = "Import Vendor Storiche"
-
-    if st.button("Genera Vendor Gara", use_container_width=True):
-        st.session_state["section"] = "Genera Vendor Gara"
-
-    if st.button("Scouting", use_container_width=True):
-        st.session_state["section"] = "Scouting"
-
-    if st.button("Database", use_container_width=True):
-        st.session_state["section"] = "Database"
-
-    section = st.session_state["section"]
-
-    st.divider()
-
-    st.markdown(f"Utente: **{USER_NAME}**")
-
-    if st.button("Logout", use_container_width=True):
-        st.session_state["logged_in"] = False
-        st.rerun()
+    except Exception:
+        return {}
 
 
-# ======================================================
-# HEADER
-# ======================================================
+def real_supplier_scouting(category, area="Italia"):
+    discovered = discover_supplier_sites(category, area)
 
-st.markdown(f"""
-<div class="hero">
-    <h1>{APP_NAME}</h1>
-    <p class="small-muted">Vendor Intelligence • Market Intelligence • AI Matching</p>
-</div>
-""", unsafe_allow_html=True)
+    rows = []
+    seen = set()
+
+    thresholds = [25, 15, 1]
+
+    for threshold in thresholds:
+        rows = []
+        seen = set()
+
+        for item in discovered:
+            url = item["url"]
+
+            crawled = crawl_supplier_site(url)
+            ai_eval = evaluate_supplier_with_ai(category, crawled)
+
+            matching = int(ai_eval.get("matching_percent", 0) or 0)
+
+            supplier_name = str(ai_eval.get("supplier_name", "")).strip()
+
+            if (
+                not supplier_name
+                or supplier_name.lower() in ["", "azienda", "company", "supplier"]
+            ):
+                supplier_name = supplier_name_from_domain(url)
+
+            if matching < threshold:
+                continue
+
+            if supplier_name.lower() in seen:
+                continue
+
+            seen.add(supplier_name.lower())
+
+            rows.append({
+                "Nome fornitore": supplier_name,
+                "Sito web": url,
+                "Partita IVA": ", ".join(crawled.get("vat_numbers", [])),
+                "Telefono": ", ".join(crawled.get("phones", [])),
+                "Email": ", ".join(crawled.get("emails", [])),
+                "Indirizzo fisico": ai_eval.get("physical_address", ""),
+                "Prodotti / Servizi": ai_eval.get("products", ""),
+                "% Matching": matching
+            })
+
+            if len(rows) >= 10:
+                break
+
+        if len(rows) >= 2:
+            break
+
+    df = pd.DataFrame(rows)
+
+    wanted_cols = [
+        "Nome fornitore",
+        "Sito web",
+        "Partita IVA",
+        "Telefono",
+        "Email",
+        "Indirizzo fisico",
+        "Prodotti / Servizi",
+        "% Matching"
+    ]
+
+    if df.empty:
+        return pd.DataFrame(columns=wanted_cols)
+
+    df = df[wanted_cols]
+    df = df.sort_values(by="% Matching", ascending=False)
+
+    if len(df) > 10:
+        df = df.head(10)
+
+    return df
 
 
-# ======================================================
+def save_scouting_to_database(df, package_name):
+    inserted = 0
+
+    for _, row in df.iterrows():
+        insert_supplier(
+            package=package_name,
+            supplier_name=row.get("Nome fornitore", ""),
+            vat_number=row.get("Partita IVA", ""),
+            email=row.get("Email", ""),
+            phone=row.get("Telefono", ""),
+            address_nl1=row.get("Indirizzo fisico", ""),
+            source_file="Scouting Web"
+        )
+        inserted += 1
+
+    return inserted
+
+
+# =====================================================
 # DASHBOARD
-# ======================================================
-
-memory = load_suppliers()
+# =====================================================
 
 if section == "Dashboard":
+    suppliers_df = load_suppliers()
 
-    col1, col2 = st.columns(2)
+    total_suppliers = 0
+    recent_count = 0
 
-    total_suppliers = memory["supplier_name"].nunique() if not memory.empty else 0
+    if not suppliers_df.empty:
+        total_suppliers = suppliers_df["supplier_name"].nunique()
 
-    if not memory.empty:
-        memory["created_at_dt"] = pd.to_datetime(memory["created_at"], errors="coerce")
+        suppliers_df["created_at"] = pd.to_datetime(
+            suppliers_df["created_at"],
+            errors="coerce"
+        )
 
-        last_30 = memory[
-            memory["created_at_dt"] >= datetime.now() - timedelta(days=30)
-        ]["supplier_name"].nunique()
-    else:
-        last_30 = 0
+        limit = datetime.now() - timedelta(days=30)
+        recent = suppliers_df[suppliers_df["created_at"] >= limit]
+        recent_count = recent["supplier_name"].nunique()
 
-    with col1:
-        st.metric("Fornitori totali nel database", total_suppliers)
+    c1, c2 = st.columns(2)
 
-    with col2:
-        st.metric("Fornitori aggiunti ultimi 30 giorni", last_30)
+    with c1:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-number">{total_suppliers}</div>
+            <div class="kpi-label">Fornitori totali nel database</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-number">{recent_count}</div>
+            <div class="kpi-label">Fornitori aggiunti ultimi 30 giorni</div>
+        </div>
+        """, unsafe_allow_html=True)
 
 
-# ======================================================
-# IMPORT VENDOR
-# ======================================================
+# =====================================================
+# IMPORT
+# =====================================================
 
-elif section == "Import Vendor Storiche":
+elif section == "Importa":
+    st.markdown("## Importa vendor storiche")
 
-    st.header("Import Vendor Storiche")
-
-    files = st.file_uploader(
-        "Carica una o più vendor list Excel compilate",
-        type=["xlsx"],
+    uploaded_files = st.file_uploader(
+        "Carica file Excel",
+        type=["xlsx", "xls"],
         accept_multiple_files=True
     )
 
-    if st.button("Importa nel database", use_container_width=True):
-
-        if not files:
-            st.warning("Carica almeno un file Excel.")
-
-        else:
-
+    if uploaded_files:
+        if st.button("Importa nel database"):
             total = 0
 
-            for file in files:
-
+            for file in uploaded_files:
                 try:
-                    count = import_vendor_excel(file)
-                    total += count
+                    df = pd.read_excel(file)
 
-                    st.success("Vendor importata correttamente")
-                    st.info(f"Numero fornitori importati: {count}")
-                    st.success("Database aggiornato")
+                    inserted = normalize_vendor_dataframe(
+                        df,
+                        source_file=file.name
+                    )
+
+                    total += inserted
+
+                    st.success(f"{file.name}: {inserted} righe importate")
 
                 except Exception as e:
-                    st.error(f"Errore su {file.name}: {e}")
+                    st.error(f"Errore {file.name}: {e}")
 
-            st.info(f"Totale fornitori importati: {total}")
-
-
-# ======================================================
-# GENERA VENDOR
-# ======================================================
-
-elif section == "Genera Vendor Gara":
-
-    st.header("Genera Vendor Gara")
-
-    st.info("Funzione in lavorazione")
+            st.success(f"Import completato. Totale: {total}")
 
 
-# ======================================================
-# SCOUTING
-# ======================================================
+# =====================================================
+# GENERA VENDOR LIST
+# =====================================================
 
-elif section == "Scouting":
+elif section == "Vendor":
+    st.markdown("## Genera vendor list")
 
-    st.header("Scouting")
+    template_file = st.file_uploader(
+        "Carica template Excel",
+        type=["xlsx", "xls"]
+    )
 
-    st.info("Versione iniziale scouting")
+    threshold = st.slider(
+        "Matching intelligente",
+        50,
+        95,
+        70
+    )
 
+    if template_file:
+        template_df = pd.read_excel(template_file)
 
-# ======================================================
-# DATABASE
-# ======================================================
-
-elif section == "Database":
-
-    st.header("Database storico vendor")
-
-    st.metric("Righe totali", len(memory))
-
-    if not memory.empty:
-
-        st.dataframe(memory, use_container_width=True)
-
-        csv = memory.to_csv(index=False).encode("utf-8")
-
-        st.download_button(
-            "Scarica database CSV",
-            data=csv,
-            file_name="database_vendor.csv",
-            mime="text/csv",
+        st.dataframe(
+            template_df.head(20),
             use_container_width=True
         )
 
+        if st.button("Genera vendor list"):
+            try:
+                result_df = generate_completed_vendor(
+                    template_df,
+                    threshold
+                )
+
+                st.success("Vendor list generata.")
+
+                st.dataframe(
+                    result_df,
+                    use_container_width=True
+                )
+
+                excel_file = dataframe_to_excel(result_df)
+
+                st.download_button(
+                    label="Scarica Excel",
+                    data=excel_file,
+                    file_name="vendor_list_compilata.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+            except Exception as e:
+                st.error(str(e))
+
+
+# =====================================================
+# SCOUTING
+# =====================================================
+
+elif section == "Scouting":
+    st.markdown("## Scouting fornitori web")
+
+    package_name = st.text_input("Categoria / lavorazione")
+
+    area = st.text_input(
+        "Area geografica",
+        value="Italia"
+    )
+
+    st.info(
+        "Il sistema cercherà automaticamente da 2 a 10 fornitori pertinenti."
+    )
+
+    if st.button("Avvia scouting web"):
+        if not package_name.strip():
+            st.warning("Inserisci una categoria.")
+        else:
+            with st.spinner("Almond Intelligence sta cercando fornitori..."):
+                result_df = real_supplier_scouting(
+                    package_name,
+                    area
+                )
+
+            st.session_state.last_scouting_df = result_df
+            st.session_state.last_scouting_package = package_name
+
+    result_df = st.session_state.last_scouting_df
+
+    if result_df is not None:
+        if result_df.empty:
+            st.warning("Nessun fornitore pertinente trovato.")
+        else:
+            st.success(f"Trovati {len(result_df)} fornitori.")
+
+            st.dataframe(
+                result_df,
+                use_container_width=True
+            )
+
+            excel_file = dataframe_to_excel(
+                result_df,
+                "Scouting"
+            )
+
+            st.download_button(
+                label="Scarica scouting Excel",
+                data=excel_file,
+                file_name=f"scouting_{st.session_state.last_scouting_package}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+            st.markdown("### Approvi il risultato?")
+
+            c1, c2 = st.columns(2)
+
+            with c1:
+                if st.button("Sì, aggiorna database"):
+                    inserted = save_scouting_to_database(
+                        result_df,
+                        st.session_state.last_scouting_package
+                    )
+
+                    st.success(
+                        f"Database aggiornato. Aggiunti: {inserted}"
+                    )
+
+            with c2:
+                if st.button("No, solo Excel"):
+                    st.info("Risultato non salvato.")
+
+
+# =====================================================
+# DATABASE
+# =====================================================
+
+elif section == "Database":
+    st.markdown("## Database fornitori")
+
+    df = load_suppliers()
+
+    if df.empty:
+        st.info("Database vuoto.")
+
     else:
-        st.info("Database ancora vuoto.")
+        search = st.text_input("Cerca fornitore o categoria")
+
+        if search:
+            mask = (
+                df["supplier_name"]
+                .astype(str)
+                .str.contains(search, case=False, na=False)
+                |
+                df["package"]
+                .astype(str)
+                .str.contains(search, case=False, na=False)
+            )
+
+            df_view = df[mask]
+
+        else:
+            df_view = df
+
+        st.dataframe(
+            df_view,
+            use_container_width=True
+        )
+
+        excel_file = dataframe_to_excel(df_view)
+
+        st.download_button(
+            label="Esporta database Excel",
+            data=excel_file,
+            file_name="database_fornitori.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
