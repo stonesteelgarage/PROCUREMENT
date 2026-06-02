@@ -9,7 +9,33 @@ import streamlit as st
 from rapidfuzz import fuzz
 from openai import OpenAI
 
-from config import OPENAI_API_KEY, DB_PATH, MATCH_THRESHOLD, LOGIN_PASSWORD, LOGO_PATH
+
+# ======================================================
+# CONFIG IBRIDA: STREAMLIT SECRETS + CONFIG.PY LOCALE
+# ======================================================
+
+def get_secret(key, default=None):
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+
+    try:
+        import config
+        if hasattr(config, key):
+            return getattr(config, key)
+    except Exception:
+        pass
+
+    return default
+
+
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
+DB_PATH = get_secret("DB_PATH", "procurement_intelligence.db")
+MATCH_THRESHOLD = int(get_secret("MATCH_THRESHOLD", 78))
+LOGIN_PASSWORD = get_secret("LOGIN_PASSWORD", "1234")
+LOGO_PATH = get_secret("LOGO_PATH", "logo.png")
 
 
 # ======================================================
@@ -28,6 +54,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+if not OPENAI_API_KEY:
+    st.error("OPENAI_API_KEY non trovata. Inseriscila in config.py oppure nei secrets di Streamlit.")
+    st.stop()
 
 
 # ======================================================
@@ -226,10 +256,6 @@ def read_excel_raw(file):
     return pd.read_excel(file, dtype=str, header=None).fillna("")
 
 
-def read_excel_normal(file):
-    return pd.read_excel(file, dtype=str).fillna("")
-
-
 def normalize_col(c):
     return str(c).strip().lower()
 
@@ -245,14 +271,33 @@ def find_col(df, keywords):
 
 def detect_columns(df):
     return {
-        "package_col": find_col(df, ["pacchetto", "lavorazione", "descrizione", "categoria", "scope", "risorsa merceologico", "merceologico"]),
-        "supplier_col": find_col(df, ["fornitore", "supplier", "vendor", "ragione sociale", "azienda", "impresa", "nome societa", "nome società", "societa", "società"]),
-        "vat_col": find_col(df, ["piva", "p.iva", "partita iva", "vat"]),
-        "email_col": find_col(df, ["email", "mail", "e-mail"]),
-        "phone_col": find_col(df, ["telefono", "phone", "tel"]),
-        "address1_col": find_col(df, ["nl1", "indirizzo", "address"]),
-        "address2_col": find_col(df, ["nl2"]),
-        "website_col": find_col(df, ["sito", "website", "url", "web"])
+        "package_col": find_col(df, [
+            "pacchetto", "lavorazione", "descrizione", "categoria",
+            "scope", "risorsa merceologico", "merceologico"
+        ]),
+        "supplier_col": find_col(df, [
+            "fornitore", "supplier", "vendor", "ragione sociale",
+            "azienda", "impresa", "nome societa", "nome società",
+            "societa", "società"
+        ]),
+        "vat_col": find_col(df, [
+            "piva", "p.iva", "partita iva", "vat"
+        ]),
+        "email_col": find_col(df, [
+            "email", "mail", "e-mail"
+        ]),
+        "phone_col": find_col(df, [
+            "telefono", "phone", "tel", "cellulare"
+        ]),
+        "address1_col": find_col(df, [
+            "nl1", "indirizzo", "address"
+        ]),
+        "address2_col": find_col(df, [
+            "nl2"
+        ]),
+        "website_col": find_col(df, [
+            "sito", "website", "url", "web"
+        ])
     }
 
 
@@ -270,6 +315,7 @@ def detect_header_row_and_columns_local(raw_df):
         joined = " | ".join(row_values)
 
         score = 0
+
         for kw in header_keywords:
             if kw in joined:
                 score += 1
@@ -293,7 +339,6 @@ def detect_header_row_and_columns_local(raw_df):
 
     df = raw_df.iloc[header_idx + 1:].copy()
     df.columns = headers
-
     df = df.loc[:, [c for c in df.columns if str(c).strip() != ""]]
     df = df.fillna("")
 
@@ -322,6 +367,7 @@ def ask_openai_excel_mapping(raw_df):
                     "col_index": j,
                     "value": val[:120]
                 })
+
         if row:
             preview_rows.append({
                 "row_index": i,
@@ -376,19 +422,23 @@ def dataframe_from_ai_mapping(raw_df, mapping):
         raise Exception("OpenAI non ha individuato la riga intestazioni.")
 
     headers = [clean_text(v) for v in raw_df.iloc[header_idx].tolist()]
+
     df = raw_df.iloc[header_idx + 1:].copy()
     df.columns = headers
     df = df.fillna("")
+    df = df.loc[:, [c for c in df.columns if str(c).strip() != ""]]
 
     def col_name(index):
         if index is None:
             return None
+
         try:
             index = int(index)
             if index < len(headers):
                 return headers[index]
         except Exception:
             return None
+
         return None
 
     cols = {
@@ -449,13 +499,19 @@ def smart_read_template_excel(file):
 
 def extract_email_from_text(text):
     text = clean_text(text)
-    found = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+    found = re.findall(
+        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        text
+    )
     return "; ".join(dict.fromkeys(found))
 
 
 def extract_phone_from_text(text):
     text = clean_text(text)
-    found = re.findall(r"(?:\+39\s?)?(?:0\d{1,4}[\s./-]?\d{5,8}|3\d{2}[\s./-]?\d{6,7})", text)
+    found = re.findall(
+        r"(?:\+39\s?)?(?:0\d{1,4}[\s./-]?\d{5,8}|3\d{2}[\s./-]?\d{6,7})",
+        text
+    )
     return "; ".join(dict.fromkeys(found))
 
 
@@ -472,8 +528,8 @@ def import_vendor_excel(file):
             continue
 
         if supplier.lower() in [
-            "nome societa'", "nome società", "nome societa", "fornitore",
-            "supplier", "vendor", "azienda", "impresa"
+            "nome societa'", "nome società", "nome societa",
+            "fornitore", "supplier", "vendor", "azienda", "impresa"
         ]:
             continue
 
@@ -553,6 +609,7 @@ def generate_vendor_from_template(template_file):
 
         for m in matches:
             key = str(m.get("vat_number") or m.get("supplier_name")).lower().strip()
+
             if key and key not in seen:
                 seen.add(key)
                 clean_matches.append(m)
@@ -567,6 +624,7 @@ def generate_vendor_from_template(template_file):
         if clean_matches:
             for supplier in clean_matches:
                 new_row = row.copy()
+
                 if cols["supplier_col"]:
                     new_row[cols["supplier_col"]] = supplier.get("supplier_name", "")
                 if cols["vat_col"]:
@@ -581,6 +639,7 @@ def generate_vendor_from_template(template_file):
                     new_row[cols["address2_col"]] = supplier.get("address_nl2", "")
                 if cols["website_col"]:
                     new_row[cols["website_col"]] = supplier.get("website", "")
+
                 output_rows.append(new_row)
         else:
             output_rows.append(row)
@@ -695,12 +754,14 @@ elif section == "Import Vendor Storiche":
             st.warning("Carica almeno un file Excel.")
         else:
             total = 0
+
             for file in files:
                 try:
                     count, msg = import_vendor_excel(file)
                     total += count
                     st.success(f"{file.name}: importate {count} righe.")
                     st.caption(msg)
+
                 except Exception as e:
                     st.error(f"Errore su {file.name}: {e}")
 
