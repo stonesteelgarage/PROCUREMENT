@@ -81,16 +81,16 @@ h1, h2, h3, h4, h5, h6, p, label, span {
 
 .stButton > button,
 .stDownloadButton > button {
-    background-color: #08213d !important;
+    background-color: #b30000 !important;
     color: white !important;
-    border: 1px solid #1e90ff !important;
+    border: 1px solid #ff4d4d !important;
     border-radius: 8px !important;
-    font-weight: 600 !important;
+    font-weight: 700 !important;
 }
 
 .stButton > button:hover,
 .stDownloadButton > button:hover {
-    background-color: #0d335f !important;
+    background-color: #d00000 !important;
     color: white !important;
 }
 
@@ -658,7 +658,7 @@ def generate_vendor_from_template(template_file):
 
 
 # ======================================================
-# SIDEBAR
+# SIDEBAR CON TASTI
 # ======================================================
 
 with st.sidebar:
@@ -669,21 +669,30 @@ with st.sidebar:
     st.caption("Procurement dashboard")
     st.divider()
 
-    section = st.radio(
-        "Menu",
-        [
-            "Dashboard",
-            "Import Vendor Storiche",
-            "Genera Vendor Gara",
-            "Scouting",
-            "Database"
-        ]
-    )
+    if "section" not in st.session_state:
+        st.session_state["section"] = "Dashboard"
+
+    if st.button("Dashboard", use_container_width=True):
+        st.session_state["section"] = "Dashboard"
+
+    if st.button("Import Vendor Storiche", use_container_width=True):
+        st.session_state["section"] = "Import Vendor Storiche"
+
+    if st.button("Genera Vendor Gara", use_container_width=True):
+        st.session_state["section"] = "Genera Vendor Gara"
+
+    if st.button("Scouting", use_container_width=True):
+        st.session_state["section"] = "Scouting"
+
+    if st.button("Database", use_container_width=True):
+        st.session_state["section"] = "Database"
+
+    section = st.session_state["section"]
 
     st.divider()
     st.markdown(f"Utente: **{USER_NAME}**")
 
-    if st.button("Logout"):
+    if st.button("Logout", use_container_width=True):
         st.session_state["logged_in"] = False
         st.rerun()
 
@@ -749,7 +758,7 @@ elif section == "Import Vendor Storiche":
         accept_multiple_files=True
     )
 
-    if st.button("Importa nel database"):
+    if st.button("Importa nel database", use_container_width=True):
         if not files:
             st.warning("Carica almeno un file Excel.")
         else:
@@ -759,13 +768,16 @@ elif section == "Import Vendor Storiche":
                 try:
                     count, msg = import_vendor_excel(file)
                     total += count
-                    st.success(f"{file.name}: importate {count} righe.")
+
+                    st.success("Vendor importata correttamente")
+                    st.info(f"Numero fornitori importati: {count}")
+                    st.success("Database aggiornato")
                     st.caption(msg)
 
                 except Exception as e:
                     st.error(f"Errore su {file.name}: {e}")
 
-            st.info(f"Totale righe importate: {total}")
+            st.info(f"Totale fornitori importati: {total}")
 
 
 # ======================================================
@@ -780,7 +792,7 @@ elif section == "Genera Vendor Gara":
         type=["xlsx"]
     )
 
-    if st.button("Genera vendor compilata"):
+    if st.button("Genera vendor compilata", use_container_width=True):
         if not template:
             st.warning("Carica prima il template.")
         else:
@@ -797,7 +809,8 @@ elif section == "Genera Vendor Gara":
                         "Scarica Excel compilato",
                         data=f,
                         file_name=os.path.basename(output_path),
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
                     )
 
                 st.success("Vendor list generata correttamente.")
@@ -817,7 +830,7 @@ elif section == "Scouting":
 
     package = st.text_input("Inserisci lavorazione/pacchetto")
 
-    if st.button("Cerca nel database storico"):
+    if st.button("Cerca nel database storico", use_container_width=True):
         if not package:
             st.warning("Inserisci una lavorazione.")
         else:
@@ -848,7 +861,8 @@ elif section == "Database":
             "Scarica database CSV",
             data=csv,
             file_name="database_vendor.csv",
-            mime="text/csv"
+            mime="text/csv",
+            use_container_width=True
         )
     else:
         st.info("Database ancora vuoto.")
