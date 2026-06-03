@@ -49,7 +49,7 @@ BACKGROUND_PATH = get_secret("BACKGROUND_PATH", "sfondo")
 # CONFIG BASE
 # ======================================================
 
-APP_NAME = "ALMOND INTELLIGENCE"
+APP_NAME = "PROCUREMENT INTELLIGENCE"
 USER_NAME = "Amandorla"
 
 os.makedirs("uploads", exist_ok=True)
