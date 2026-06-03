@@ -1556,7 +1556,7 @@ elif section == "Scouting":
 
     st.info(
         "Inserisci una lavorazione: il sistema cerca fornitori nel web, legge i siti, "
-        "estrae dati aziendali, valuta la pertinenza con OpenAI e aggiorna il database SQLite."
+        "estrae dati aziendali, valuta la pertinenza con ALMOND AI e aggiorna il database."
     )
 
     package = st.text_input(
