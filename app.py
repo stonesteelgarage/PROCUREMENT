@@ -10,6 +10,10 @@ import streamlit as st
 from openpyxl import load_workbook
 from rapidfuzz import fuzz
 from openai import OpenAI
+import requests
+from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
+from urllib.parse import urlparse
 
 
 # ======================================================
@@ -1015,6 +1019,270 @@ def generate_vendor_from_template(template_file):
     return output_path, preview_df, detection_msg
 
 
+
+# ======================================================
+# SCOUTING WEB REALE: RICERCA + SCRAPING + AI + DB
+# ======================================================
+
+def domain_to_supplier_name(url):
+    try:
+        domain = urlparse(url).netloc.replace("www.", "")
+        name = domain.split(".")[0]
+        return name.upper()
+    except Exception:
+        return ""
+
+
+def search_web_suppliers(package, area="", max_results=10):
+    """
+    Cerca fornitori sul web partendo dalla lavorazione/package.
+    Non richiede URL all'utente.
+    """
+    package = clean_text(package)
+    area = clean_text(area)
+
+    queries = [
+        f'azienda fornitore "{package}" {area} Italia email telefono partita iva',
+        f'"{package}" impresa {area} Italia contatti',
+        f'"{package}" subappalto {area} azienda',
+    ]
+
+    results = []
+    seen_urls = set()
+
+    try:
+        with DDGS() as ddgs:
+            for query in queries:
+                remaining = max_results - len(results)
+                if remaining <= 0:
+                    break
+
+                for r in ddgs.text(query, max_results=remaining):
+                    url = clean_text(r.get("href", ""))
+                    if not url or url in seen_urls:
+                        continue
+
+                    seen_urls.add(url)
+                    results.append({
+                        "title": clean_text(r.get("title", "")),
+                        "url": url,
+                        "snippet": clean_text(r.get("body", "")),
+                        "query": query,
+                    })
+
+                    if len(results) >= max_results:
+                        break
+    except Exception as e:
+        st.warning(f"Errore ricerca web: {e}")
+
+    return results
+
+
+def scrape_website(url):
+    """
+    Legge il testo visibile del sito. Se il sito blocca requests, ritorna stringa vuota.
+    """
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0 Safari/537.36"
+            ),
+            "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+        }
+
+        response = requests.get(url, headers=headers, timeout=12, allow_redirects=True)
+
+        if response.status_code >= 400:
+            return ""
+
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "text/html" not in content_type and "application/xhtml" not in content_type:
+            return ""
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe"]):
+            tag.extract()
+
+        text = soup.get_text(separator=" ")
+        text = re.sub(r"\s+", " ", text)
+        return clean_text(text[:18000])
+
+    except Exception:
+        return ""
+
+
+def safe_json_loads(txt):
+    txt = clean_text(txt)
+    txt = txt.replace("```json", "").replace("```", "").strip()
+
+    try:
+        return json.loads(txt)
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", txt, flags=re.DOTALL)
+    if match:
+        return json.loads(match.group(0))
+
+    raise Exception(f"JSON non valido: {txt[:500]}")
+
+
+def analyze_web_supplier_with_ai(package, url, title, snippet, page_text):
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    fallback_name = domain_to_supplier_name(url)
+    extracted_email = extract_email_from_text(page_text)
+    extracted_phone = extract_phone_from_text(page_text)
+    extracted_vat = extract_vat_from_text(page_text)
+
+    prompt = f"""
+Sei un esperto procurement per infrastrutture, costruzioni, impiantistica, cantieri, subappalti e forniture tecniche.
+
+Devi valutare se il sito trovato online appartiene a un possibile fornitore pertinente per questa lavorazione/package.
+
+LAVORAZIONE / PACKAGE RICHIESTA:
+{package}
+
+URL:
+{url}
+
+NOME DA DOMINIO SE NON TROVI ALTRO:
+{fallback_name}
+
+TITOLO RISULTATO:
+{title}
+
+SNIPPET MOTORE DI RICERCA:
+{snippet}
+
+DATI ESTRATTI CON REGEX DAL SITO:
+email: {extracted_email}
+telefono: {extracted_phone}
+partita iva: {extracted_vat}
+
+TESTO LETTO DAL SITO:
+{page_text[:10000]}
+
+Restituisci SOLO JSON valido, senza markdown, con questa struttura esatta:
+
+{{
+  "is_supplier": true,
+  "supplier_name": "",
+  "package_name": "{package}",
+  "vat_number": "",
+  "email": "",
+  "phone": "",
+  "address_nl1": "",
+  "address_nl2": "",
+  "website": "{url}",
+  "services": "",
+  "relevance_score": 0,
+  "reason": ""
+}}
+
+Regole:
+- is_supplier deve essere true solo se sembra una vera azienda/impresa/fornitore, non un portale generico, marketplace, directory pura o articolo.
+- relevance_score deve essere da 0 a 100.
+- Se l'azienda è pertinente in modo concreto alla lavorazione, assegna almeno 70.
+- Se è solo vagamente collegata, assegna 40-60.
+- Se non trovi il nome azienda, usa il nome da dominio.
+- Se email, telefono o P.IVA non sono presenti, lascia stringa vuota.
+- package_name deve restare la lavorazione richiesta dall'utente.
+"""
+
+    response = client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt
+    )
+
+    return safe_json_loads(response.output_text)
+
+
+def scouting_web_and_save(package, area="", max_results=10, min_score=60):
+    """
+    Cerca fornitori online, entra nei siti, estrae dati, valuta con AI e salva nel DB SQLite.
+    """
+    package = clean_text(package)
+    area = clean_text(area)
+
+    web_results = search_web_suppliers(package, area, max_results=max_results)
+
+    saved = []
+    discarded = []
+
+    for result in web_results:
+        url = result.get("url", "")
+        title = result.get("title", "")
+        snippet = result.get("snippet", "")
+
+        page_text = scrape_website(url)
+        if not page_text:
+            page_text = snippet
+
+        extracted_email = extract_email_from_text(page_text)
+        extracted_phone = extract_phone_from_text(page_text)
+        extracted_vat = extract_vat_from_text(page_text)
+
+        try:
+            ai_data = analyze_web_supplier_with_ai(
+                package=package,
+                url=url,
+                title=title,
+                snippet=snippet,
+                page_text=page_text
+            )
+
+            supplier_name = clean_text(ai_data.get("supplier_name", "")) or domain_to_supplier_name(url) or title
+            vat_number = clean_text(ai_data.get("vat_number", "")) or extracted_vat
+            email = clean_text(ai_data.get("email", "")) or extracted_email
+            phone = clean_text(ai_data.get("phone", "")) or extracted_phone
+            relevance = int(ai_data.get("relevance_score", 0) or 0)
+            is_supplier = bool(ai_data.get("is_supplier", False))
+
+            row = {
+                "package_name": package,
+                "supplier_name": supplier_name,
+                "vat_number": vat_number,
+                "email": email,
+                "phone": phone,
+                "address_nl1": clean_text(ai_data.get("address_nl1", "")),
+                "address_nl2": clean_text(ai_data.get("address_nl2", "")),
+                "website": url,
+                "source_file": "WEB_SCOUTING",
+            }
+
+            result_row = dict(row)
+            result_row["relevance_score"] = relevance
+            result_row["reason"] = clean_text(ai_data.get("reason", ""))
+            result_row["services"] = clean_text(ai_data.get("services", ""))
+
+            if is_supplier and relevance >= min_score:
+                if not supplier_exists(supplier_name, vat_number):
+                    insert_supplier(row)
+                    saved.append(result_row)
+                else:
+                    result_row["reason"] = "Già presente nel database"
+                    discarded.append(result_row)
+            else:
+                if not result_row["reason"]:
+                    result_row["reason"] = "Non pertinente o sotto soglia"
+                discarded.append(result_row)
+
+        except Exception as e:
+            discarded.append({
+                "package_name": package,
+                "supplier_name": title or domain_to_supplier_name(url),
+                "website": url,
+                "relevance_score": 0,
+                "reason": f"Errore analisi: {e}"
+            })
+
+    return saved, discarded, web_results
+
+
 # ======================================================
 # SIDEBAR CON TASTI
 # ======================================================
@@ -1183,20 +1451,86 @@ elif section == "Genera Vendor Gara":
 # ======================================================
 
 elif section == "Scouting":
-    st.header("Scouting")
+    st.header("Scouting Web Fornitori")
 
-    st.info("Versione iniziale: lo scouting web automatico sarà ampliato dopo. Per ora usiamo il motore database + predisposizione OpenAI.")
+    st.info(
+        "Inserisci una lavorazione: il sistema cerca fornitori nel web, legge i siti, "
+        "estrae dati aziendali, valuta la pertinenza con OpenAI e aggiorna il database SQLite."
+    )
 
-    package = st.text_input("Inserisci lavorazione/pacchetto")
+    package = st.text_input(
+        "Lavorazione / package",
+        placeholder="Esempio: carpenteria metallica, impianti antincendio, impermeabilizzazioni gallerie"
+    )
 
-    if st.button("Cerca nel database storico", use_container_width=True):
+    area = st.text_input(
+        "Area geografica opzionale",
+        placeholder="Esempio: Lazio, Roma, Italia, Nord Italia"
+    )
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        max_results = st.slider("Risultati web da analizzare", 2, 30, 10)
+
+    with col_b:
+        min_score = st.slider("Pertinenza minima per salvare nel DB", 0, 100, 60)
+
+    if st.button("Cerca fornitori nel web e aggiorna DB", use_container_width=True):
         if not package:
+            st.warning("Inserisci prima una lavorazione.")
+        else:
+            with st.spinner("ALMOND Intelligence sta cercando fornitori nel web e leggendo i siti..."):
+                saved, discarded, web_results = scouting_web_and_save(
+                    package=package,
+                    area=area,
+                    max_results=max_results,
+                    min_score=min_score
+                )
+
+            st.success(f"Fornitori nuovi salvati nel DB: {len(saved)}")
+            st.info(f"Risultati web analizzati: {len(web_results)} | Scartati / già presenti / sotto soglia: {len(discarded)}")
+
+            if saved:
+                st.subheader("Nuovi fornitori salvati nel database")
+                df_saved = pd.DataFrame(saved)
+                st.dataframe(df_saved, use_container_width=True)
+
+                csv_saved = df_saved.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "Scarica nuovi fornitori CSV",
+                    data=csv_saved,
+                    file_name="scouting_nuovi_fornitori.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+            if discarded:
+                st.subheader("Risultati scartati / già presenti / non pertinenti")
+                df_discarded = pd.DataFrame(discarded)
+                st.dataframe(df_discarded, use_container_width=True)
+
+            if not saved and not discarded:
+                st.warning("La ricerca web non ha restituito risultati analizzabili.")
+
+    st.divider()
+
+    st.subheader("Ricerca nel database storico")
+    st.caption("Questa parte usa i fornitori già presenti nel DB, separata dallo scouting web.")
+
+    db_package = st.text_input(
+        "Cerca nel DB storico",
+        placeholder="Esempio: impianti elettrici, carpenteria, segnalamento"
+    )
+
+    if st.button("Cerca nel database", use_container_width=True):
+        if not db_package:
             st.warning("Inserisci una lavorazione.")
         else:
-            results = match_package(package, memory)
+            results = match_package(db_package, load_suppliers())
 
             if results:
-                st.success(f"Trovati {len(results)} possibili fornitori già presenti.")
+                st.success(f"Trovati {len(results)} fornitori nel database.")
                 st.dataframe(pd.DataFrame(results), use_container_width=True)
             else:
                 st.warning("Nessun fornitore trovato nel database storico.")
