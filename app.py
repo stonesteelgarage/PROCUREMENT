@@ -13,7 +13,7 @@ from openai import OpenAI
 import requests
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
 
 
 # ======================================================
@@ -49,7 +49,7 @@ BACKGROUND_PATH = get_secret("BACKGROUND_PATH", "sfondo")
 # CONFIG BASE
 # ======================================================
 
-APP_NAME = "PROCUREMENT INTELLIGENCE"
+APP_NAME = "ALMOND INTELLIGENCE"
 USER_NAME = "Amandorla"
 
 os.makedirs("uploads", exist_ok=True)
@@ -1037,46 +1037,147 @@ def search_web_suppliers(package, area="", max_results=10):
     """
     Cerca fornitori sul web partendo dalla lavorazione/package.
     Non richiede URL all'utente.
+
+    Versione robusta:
+    1) prova DuckDuckGo tramite libreria DDGS;
+    2) se DDGS restituisce 0 risultati, usa fallback HTML su DuckDuckGo;
+    3) se ancora 0, usa fallback HTML su Bing.
+
+    In questo modo non rimane più bloccato con "Risultati web analizzati: 0".
     """
     package = clean_text(package)
     area = clean_text(area)
 
+    base_terms = f'{package} {area} Italia'.strip()
+
     queries = [
-        f'azienda fornitore "{package}" {area} Italia email telefono partita iva',
-        f'"{package}" impresa {area} Italia contatti',
-        f'"{package}" subappalto {area} azienda',
+        f'azienda fornitore {base_terms} contatti email telefono partita iva',
+        f'impresa {base_terms} servizi contatti',
+        f'azienda {base_terms} lavori forniture subappalto',
+        f'{base_terms} site:.it contatti',
     ]
 
     results = []
     seen_urls = set()
 
+    def add_result(title, url, snippet, query, source):
+        url = clean_text(url)
+        title = clean_text(title)
+        snippet = clean_text(snippet)
+
+        if not url:
+            return
+
+        # scarta risultati chiaramente non utili
+        bad_domains = [
+            "facebook.com", "instagram.com", "linkedin.com", "youtube.com",
+            "amazon.", "wikipedia.org", "subito.it", "ebay.",
+            "paginegialle.it/", "paginebianche.it/"
+        ]
+        url_l = url.lower()
+        if any(bad in url_l for bad in bad_domains):
+            return
+
+        if url in seen_urls:
+            return
+
+        seen_urls.add(url)
+        results.append({
+            "title": title,
+            "url": url,
+            "snippet": snippet,
+            "query": query,
+            "search_source": source,
+        })
+
+    # 1) DuckDuckGo tramite libreria
     try:
         with DDGS() as ddgs:
             for query in queries:
-                remaining = max_results - len(results)
-                if remaining <= 0:
+                if len(results) >= max_results:
                     break
 
-                for r in ddgs.text(query, max_results=remaining):
-                    url = clean_text(r.get("href", ""))
-                    if not url or url in seen_urls:
-                        continue
+                try:
+                    # Alcune versioni accettano region/safesearch/timelimit/backend, altre no.
+                    raw_results = ddgs.text(
+                        query,
+                        region="it-it",
+                        safesearch="moderate",
+                        max_results=max_results
+                    )
+                except TypeError:
+                    raw_results = ddgs.text(query, max_results=max_results)
 
-                    seen_urls.add(url)
-                    results.append({
-                        "title": clean_text(r.get("title", "")),
-                        "url": url,
-                        "snippet": clean_text(r.get("body", "")),
-                        "query": query,
-                    })
-
+                for r in raw_results or []:
+                    add_result(
+                        r.get("title", ""),
+                        r.get("href", ""),
+                        r.get("body", ""),
+                        query,
+                        "DDGS"
+                    )
                     if len(results) >= max_results:
                         break
     except Exception as e:
-        st.warning(f"Errore ricerca web: {e}")
+        st.warning(f"DuckDuckGo libreria non disponibile o senza risultati: {e}")
+
+    # 2) Fallback HTML DuckDuckGo
+    if len(results) == 0:
+        for query in queries:
+            if len(results) >= max_results:
+                break
+            try:
+                search_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(query)
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/125 Safari/537.36",
+                    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+                }
+                response = requests.get(search_url, headers=headers, timeout=15)
+                soup = BeautifulSoup(response.text, "html.parser")
+
+                for item in soup.select(".result"):
+                    a = item.select_one("a.result__a")
+                    snippet_tag = item.select_one(".result__snippet")
+                    if not a:
+                        continue
+                    title = a.get_text(" ", strip=True)
+                    url = a.get("href", "")
+                    snippet = snippet_tag.get_text(" ", strip=True) if snippet_tag else ""
+                    add_result(title, url, snippet, query, "DuckDuckGo HTML")
+                    if len(results) >= max_results:
+                        break
+            except Exception as e:
+                st.warning(f"Fallback DuckDuckGo HTML non riuscito: {e}")
+
+    # 3) Fallback Bing HTML
+    if len(results) == 0:
+        for query in queries:
+            if len(results) >= max_results:
+                break
+            try:
+                search_url = "https://www.bing.com/search?q=" + quote_plus(query)
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/125 Safari/537.36",
+                    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+                }
+                response = requests.get(search_url, headers=headers, timeout=15)
+                soup = BeautifulSoup(response.text, "html.parser")
+
+                for item in soup.select("li.b_algo"):
+                    a = item.select_one("h2 a")
+                    snippet_tag = item.select_one("p")
+                    if not a:
+                        continue
+                    title = a.get_text(" ", strip=True)
+                    url = a.get("href", "")
+                    snippet = snippet_tag.get_text(" ", strip=True) if snippet_tag else ""
+                    add_result(title, url, snippet, query, "Bing HTML")
+                    if len(results) >= max_results:
+                        break
+            except Exception as e:
+                st.warning(f"Fallback Bing HTML non riuscito: {e}")
 
     return results
-
 
 def scrape_website(url):
     """
@@ -1454,7 +1555,8 @@ elif section == "Scouting":
     st.header("Scouting Web Fornitori")
 
     st.info(
-        "Inserisci una lavorazione e l'area geografinca la Procurement Intelligence cercherà i fornitori per te e aggiornerà il Database."
+        "Inserisci una lavorazione: il sistema cerca fornitori nel web, legge i siti, "
+        "estrae dati aziendali, valuta la pertinenza con OpenAI e aggiorna il database SQLite."
     )
 
     package = st.text_input(
@@ -1488,7 +1590,13 @@ elif section == "Scouting":
                 )
 
             st.success(f"Fornitori nuovi salvati nel DB: {len(saved)}")
-            st.info(f"Risultati web analizzati: {len(web_results)} | Scartati / già presenti / sotto soglia: {len(discarded)}")
+            st.info(f"Risultati web trovati: {len(web_results)} | Scartati / già presenti / sotto soglia: {len(discarded)}")
+
+            if web_results:
+                with st.expander("Mostra risultati web grezzi trovati"):
+                    st.dataframe(pd.DataFrame(web_results), use_container_width=True)
+            else:
+                st.error("La ricerca web non ha restituito risultati. Questa versione usa fallback HTML DuckDuckGo + Bing; se resta a zero, verifica connessione Internet di Streamlit/Mac o aggiorna duckduckgo-search.")
 
             if saved:
                 st.subheader("Nuovi fornitori salvati nel database")
@@ -1509,8 +1617,8 @@ elif section == "Scouting":
                 df_discarded = pd.DataFrame(discarded)
                 st.dataframe(df_discarded, use_container_width=True)
 
-            if not saved and not discarded:
-                st.warning("La ricerca web non ha restituito risultati analizzabili.")
+            if web_results and not saved and not discarded:
+                st.warning("Sono stati trovati risultati web, ma nessuno è stato salvato. Prova ad abbassare la pertinenza minima a 40 oppure usa una lavorazione meno specifica.")
 
     st.divider()
 
@@ -1558,3 +1666,4 @@ elif section == "Database":
         )
     else:
         st.info("Database ancora vuoto.")
+
