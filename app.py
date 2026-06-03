@@ -1454,8 +1454,7 @@ elif section == "Scouting":
     st.header("Scouting Web Fornitori")
 
     st.info(
-        "Inserisci una lavorazione: il sistema cerca fornitori nel web, legge i siti, "
-        "estrae dati aziendali, valuta la pertinenza con OpenAI e aggiorna il database SQLite."
+        "Inserisci una lavorazione e l'area geografinca la Procurement Intelligence cercherà i fornitori per te e aggiornerà il Database."
     )
 
     package = st.text_input(
